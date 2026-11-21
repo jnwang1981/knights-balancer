@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { render, screen } from '@testing-library/react';
+import { fireEvent, render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import App from './App';
 
@@ -77,6 +77,59 @@ describe('App smoke (v1.6)', () => {
     await user.click(screen.getByRole('button', { name: /推荐 1/ }));
     // 切回推荐 1：公告文本与第一次完全一致（显示顺序生成时已定死，不重抽）
     expect(notice()).toBe(first);
+    unmount();
+  });
+
+  it('changing match number/date keeps the generated grouping, clears only statuses', async () => {
+    const user = userEvent.setup();
+    localStorage.clear();
+    const { unmount } = render(<App />);
+    await user.click(screen.getByRole('button', { name: '本场分组' }));
+    // 先把第一位球员设成稍疲劳 + 轻伤，证明换场次/日期后状态被清空
+    const fatigueSelects = screen.getAllByLabelText('当天状态');
+    const injurySelects = screen.getAllByLabelText('伤病');
+    await user.selectOptions(fatigueSelects[0], 'slightly');
+    await user.selectOptions(injurySelects[0], 'minor');
+    expect((fatigueSelects[0] as HTMLSelectElement).value).toBe('slightly');
+    expect((injurySelects[0] as HTMLSelectElement).value).toBe('minor');
+    await user.click(screen.getByRole('button', { name: '生成分组' }));
+    await screen.findByText(/推荐方案/);
+    const notice = () => document.querySelector('pre.notice')?.textContent ?? '';
+    const teamsBefore = notice().slice(notice().indexOf('深黑队'));
+    expect(teamsBefore).toContain('深黑队');
+    expect(teamsBefore).toContain('浅蓝队');
+    // 换场次与日期
+    const matchInput = screen.getByLabelText('场次') as HTMLInputElement;
+    const dateInput = screen.getByLabelText('比赛日期') as HTMLInputElement;
+    fireEvent.change(matchInput, { target: { value: '2' } });
+    fireEvent.change(dateInput, { target: { value: '2026-11-29' } });
+    // 分组保留：推荐方案还在，名单顺序与黑/浅蓝归属与换之前完全一致
+    expect(screen.getByText(/推荐方案/)).toBeTruthy();
+    expect(screen.getByText(/枚举总数 6435/)).toBeTruthy();
+    const after = notice();
+    expect(after.slice(after.indexOf('深黑队'))).toBe(teamsBefore);
+    // 公告跟着改成新的场次/日期
+    expect(after).toContain('第2场分组');
+    expect(after).toContain('2026年11月29日');
+    // 状态被清空，清空提示出现
+    expect((screen.getAllByLabelText('当天状态')[0] as HTMLSelectElement).value).toBe('normal');
+    expect((screen.getAllByLabelText('伤病')[0] as HTMLSelectElement).value).toBe('none');
+    expect(screen.getByText(/场次或日期已更换，当天状态已清空/)).toBeTruthy();
+    unmount();
+  });
+
+  it('match number and date inputs render first, before all other content', async () => {
+    localStorage.clear();
+    const { unmount } = render(<App />);
+    // 默认在球员档案页，场次/日期输入已经在最上面（不在任何页签里）
+    const inputs = Array.from(document.querySelectorAll('input'));
+    expect(inputs[0]).toBe(screen.getByLabelText('场次'));
+    expect(inputs[1]).toBe(screen.getByLabelText('比赛日期'));
+    expect((inputs[0] as HTMLInputElement).type).toBe('number');
+    expect((inputs[1] as HTMLInputElement).type).toBe('date');
+    // 输入框在页签导航之前
+    const nav = document.querySelector('nav.tabs')!;
+    expect(inputs[0].compareDocumentPosition(nav)).toBe(Node.DOCUMENT_POSITION_FOLLOWING);
     unmount();
   });
 });

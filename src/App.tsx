@@ -123,9 +123,10 @@ setMatchDay((prev) => ({
 statuses: {...prev.statuses, [id]: applyStatusPatch(prev.statuses[id]?? defaultMatchDayStatus(), patch)},
 }));
 };
+// 换场次/日期只清空当天状态（状态按比赛日记），已生成的分组保留不动；
+// 只有点「生成分组」或改出勤才重新分组（并重新抽显示顺序与黑/浅蓝归属）。
 const changeMatch = (patch: Partial<Pick<MatchDay, 'matchNumber' | 'matchDate'>>) => {
 setMatchDay((prev) => ({...prev,...patch, statuses: {}}));
-setResult(null); setCoverageRanked(null); setManualTeams(null); setCovIdx(0); setDisplayMap({});
 setMatchChangedNote('场次或日期已更换，当天状态已清空，请重新填写。');
 };
 
@@ -342,6 +343,13 @@ return (
 {corruptMsg && <p className="warn">本地数据损坏提示：{corruptMsg}（原数据未被清空；可从备份导入恢复。）</p>}
 {saveError && <p className="warn">保存失败：{saveError}</p>}
 </header>
+<section className="card">
+<div className="form-grid">
+<label>场次<input type="number" min={1} value={matchDay.matchNumber} onChange={(e) => changeMatch({ matchNumber: Number(e.target.value) || 1 })} /></label>
+<label>比赛日期<input type="date" value={matchDay.matchDate} onChange={(e) => changeMatch({ matchDate: e.target.value })} /></label>
+</div>
+{matchChangedNote && <p className="warn">{matchChangedNote}</p>}
+</section>
 <nav className="tabs">
 {([['players', '球员档案'], ['match', '本场分组'], ['matches', '比赛记录'], ['board', '榜单与参考'], ['backup', '数据备份']] as const).map(([k, label]) => (
 <button key={k} className={tab === k? 'active': ''} onClick={() => setTab(k)}>{label}</button>
@@ -427,8 +435,6 @@ setEditing({...editing, secondaryPositions: s});
         <section>
           <div className="card"><h3>本场设置</h3>
             <div className="form-grid">
-              <label>场次<input type="number" min={1} value={matchDay.matchNumber} onChange={(e) => changeMatch({ matchNumber: Number(e.target.value) || 1 })} /></label>
-              <label>比赛日期<input type="date" value={matchDay.matchDate} onChange={(e) => changeMatch({ matchDate: e.target.value })} /></label>
               <label>时长（分钟）<input type="number" min={30} max={240} value={duration} onChange={(e) => setDuration(Number(e.target.value) || 120)} /></label>
               <label>场馆<input value={venue} onChange={(e) => setVenue(e.target.value)} /></label>
               <label>时间<input value={matchTime} onChange={(e) => setMatchTime(e.target.value)} /></label>
@@ -437,7 +443,6 @@ setEditing({...editing, secondaryPositions: s});
               <label><input type="checkbox" checked={reqOrg} onChange={(e) => setReqOrg(e.target.checked)} /> 硬约束：每队至少一名已确认组织接应者</label>
             </div>
             <p className="muted">硬约束默认开启；没有可行方案时不会自动放宽，需教练明确关闭约束后重算。场次或日期一换，当天状态全部清空，需重新填写。支点/接应只算能踢外场的人（因伤只能守门的人不算）。</p>
-            {matchChangedNote && <p className="warn">{matchChangedNote}</p>}
             <h4>出勤（{selected.size} 人）</h4>
             <div className="attend-grid">
               {activePlayers.map((p) => {
