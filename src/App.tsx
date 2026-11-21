@@ -8,6 +8,7 @@ RULE_VERSION, defaultMatchDayStatus,
 import { FAMILIARITY_VALUES, isValidScore, missingOutfield, parseScoreInput} from './lib/validation';
 import { applyStatusPatch, effectiveScores} from './lib/matchday';
 import { evaluatePartition, groupPlayers, type GroupingInputPlayer, type GroupingResult, type TeamMetrics} from './lib/grouping';
+import { buildDisplayMap, displayFor, type DisplayTeams} from './lib/display';
 import { evaluateTeamCoverage, rankByCoverage, type CoverageRanked, type TeamCoverage} from './lib/positioning';
 import { computeGkRotation, ROLE_STATUS_LABEL} from './lib/gk';
 import { computeLeaderboard, lastNMatches, scoreMismatch, validateGoalEvent} from './lib/events';
@@ -105,6 +106,9 @@ const [calculating, setCalculating] = useState(false);
 const [result, setResult] = useState<GroupingResult | null>(null);
 const [coverageRanked, setCoverageRanked] = useState<CoverageRanked[] | null>(null);
 const [covIdx, setCovIdx] = useState(0);
+// 展示数据：一次生成里每套候选的随机显示顺序 + 黑/浅蓝抛硬币结果（按稳定组合键索引）。
+// 只影响名单怎么显示，计算一律用 metrics.teamA/teamB（ID 排序的规范表示）。
+const [displayMap, setDisplayMap] = useState<Record<string, DisplayTeams>>({});
 const [manualTeams, setManualTeams] = useState<Record<TeamId, string[]> | null>(null);
 const [swapA, setSwapA] = useState('');
 const [swapB, setSwapB] = useState('');
@@ -121,7 +125,7 @@ statuses: {...prev.statuses, [id]: applyStatusPatch(prev.statuses[id]?? defaultM
 };
 const changeMatch = (patch: Partial<Pick<MatchDay, 'matchNumber' | 'matchDate'>>) => {
 setMatchDay((prev) => ({...prev,...patch, statuses: {}}));
-setResult(null); setCoverageRanked(null); setManualTeams(null); setCovIdx(0);
+setResult(null); setCoverageRanked(null); setManualTeams(null); setCovIdx(0); setDisplayMap({});
 setMatchChangedNote('场次或日期已更换，当天状态已清空，请重新填写。');
 };
 
@@ -148,9 +152,10 @@ catch { return null;}
 }, [currentTeams, selectedList, matchDay, reqPivot, reqOrg, missingSelected]);
 const currentCoverage: { dark: TeamCoverage; light: TeamCoverage} | null = useMemo(() => {
 if (!currentTeams) return null;
+// 覆盖按规范表示算：先把显示顺序排回 ID 序，守门轮换顺序与改动前一致。
 return {
-dark: evaluateTeamCoverage('dark', currentTeams.dark, byId, matchDay.statuses),
-light: evaluateTeamCoverage('light', currentTeams.light, byId, matchDay.statuses),
+dark: evaluateTeamCoverage('dark', [...currentTeams.dark].sort(), byId, matchDay.statuses),
+light: evaluateTeamCoverage('light', [...currentTeams.light].sort(), byId, matchDay.statuses),
 };
 }, [currentTeams, byId, matchDay]);
 
@@ -164,24 +169,30 @@ if (res.candidates.length) {
 const ranked = rankByCoverage(res.candidates, byId, matchDay.statuses);
 setCoverageRanked(ranked);
 setCovIdx(0);
+// 生成那一刻定死每套候选的显示顺序与黑/浅蓝归属，之后切换查看只查表、不重抽。
+const dm = buildDisplayMap(res.candidates);
+setDisplayMap(dm);
 const top = ranked[0];
-setManualTeams({ dark: [...top.metrics.teamA], light: [...top.metrics.teamB]});
+const disp = displayFor(top.metrics, dm);
+setManualTeams({ dark: [...disp.dark], light: [...disp.light]});
 setManualReason('');
-} else { setCoverageRanked([]); setManualTeams(null);}
+} else { setCoverageRanked([]); setManualTeams(null); setDisplayMap({});}
 } finally { setCalculating(false);}
 };
 const pickCoverage = (i: number) => {
 if (!coverageRanked) return;
 const c = coverageRanked[i];
 setCovIdx(i);
-setManualTeams({ dark: [...c.metrics.teamA], light: [...c.metrics.teamB]});
+const disp = displayFor(c.metrics, displayMap);
+setManualTeams({ dark: [...disp.dark], light: [...disp.light]});
 };
 const pickAbility = (rank: number) => {
 if (!result) return;
 const c = result.candidates.find((x) => x.rank === rank);
 if (!c) return;
 setCovIdx(-1);
-setManualTeams({ dark: [...c.metrics.teamA], light: [...c.metrics.teamB]});
+const disp = displayFor(c.metrics, displayMap);
+setManualTeams({ dark: [...disp.dark], light: [...disp.light]});
 };
 const doSwap = () => {
 if (!currentTeams ||!swapA ||!swapB) return;
@@ -308,7 +319,9 @@ const gkSlots = useMemo(() => {
 if (!currentTeams) return null;
 const known = new Set(selectedList.map((p) => p.id));
 if ([...currentTeams.dark,...currentTeams.light].some((id) =>!known.has(id))) return null;
-try { return computeGkRotation(currentTeams, selectedList, matchDay.statuses, duration);}
+// 守门轮换按规范表示算：先把显示顺序排回 ID 序，轮换顺序与改动前一致。
+const sortedTeams = { dark: [...currentTeams.dark].sort(), light: [...currentTeams.light].sort() };
+try { return computeGkRotation(sortedTeams, selectedList, matchDay.statuses, duration);}
 catch { return null;}
 // eslint-disable-next-line react-hooks/exhaustive-deps
 }, [currentTeams, selectedList, matchDay, duration]);
@@ -495,12 +508,16 @@ setEditing({...editing, secondaryPositions: s});
                     <tbody>
                       {[...result.candidates].map((c) => {
                         const cov = coverageRanked?.find((x) => x.abilityRank === c.rank);
-                        const isCurrent = manualTeams && [...manualTeams.dark].sort().join(',') === [...c.metrics.teamA].sort().join(',');
+                        // 对照表按每套候选的展示数据渲染（随机顺序 + 抛硬币后的黑/浅蓝归属），与点开的效果一致；
+                        // 行顺序仍按能力排名。
+                        const disp = displayFor(c.metrics, displayMap);
+                        const darkSet = manualTeams ? [...manualTeams.dark].sort().join(',') : '';
+                        const isCurrent = manualTeams && (darkSet === [...c.metrics.teamA].sort().join(',') || darkSet === [...c.metrics.teamB].sort().join(','));
                         return (
                           <tr key={c.rank} className={isCurrent ? 'max-row' : ''}>
                             <td>第 {c.rank} 名</td>
-                            <td>{c.metrics.teamA.map(nameOf).join('、')}</td>
-                            <td>{c.metrics.teamB.map(nameOf).join('、')}</td>
+                            <td>{disp.dark.map(nameOf).join('、')}</td>
+                            <td>{disp.light.map(nameOf).join('、')}</td>
                             <td>{fmt(c.metrics.maxDelta)}</td>
                             <td>{cov ? `${cov.weakest}/7` : '—'}</td>
                             <td>{cov ? cov.totalUncovered : '—'}</td>
@@ -567,7 +584,8 @@ setEditing({...editing, secondaryPositions: s});
               <p className="muted">每时段 {gkSlots && gkSlots[0] ? fmt(gkSlots[0].durationMinutes) : '—'} 分钟 · 门将分不与外场分相加 · 勾了「因伤不能守门」的不进轮换；「因伤只能守门」的人整场固定守门</p>
               {(['dark', 'light'] as TeamId[]).map((t) => {
                 const fixed = currentTeams[t].find((id) => statusOf(id).gkOnly);
-                const order = fixed ? [fixed] : currentTeams[t].filter((id) => !statusOf(id).cannotKeepGoal);
+                // 守门顺序按 ID 序排（与改动前一致），不受名单随机显示顺序影响。
+                const order = fixed ? [fixed] : [...currentTeams[t]].sort().filter((id) => !statusOf(id).cannotKeepGoal);
                 return (
                   <div key={t}><strong>{teamLabel(t)}队守门顺序：</strong>
                     {fixed ? <span className="chip">{nameOf(fixed)}（整场固定守门）</span> : order.map((id, i) => <span key={id} className="chip">{i + 1}.{nameOf(id)}</span>)}
@@ -768,6 +786,7 @@ setEditing({...editing, secondaryPositions: s});
             <ul>
               <li>位置版：阵型 3-3-1，7 个外场槽位与 Excel 位置一对一；覆盖只算擅长/熟悉，应急（代价 3）与未评估（代价 4）只填充不算覆盖，不适合禁止分配；无左右镜像。</li>
               <li>分组：枚举全部等人数分组（固定首人在 A 队去重），按（最大 Δ、体能+无球+回防 Δ 和、八项 Δ 和、稳定 ID 组合键）字典序排序，评分整数化（×2）避免浮点误差；先按能力取前 10 名，再按覆盖（最弱时段覆盖高→低、未覆盖总数少→多、能力排名前→后）取前 3 名推荐，默认选中覆盖第 1 名。</li>
+              <li>输出名单：两队内部名字每次生成时随机排列（Fisher-Yates 洗牌）、黑/浅蓝归属抛硬币决定；只影响展示，分队、能力、覆盖、守门轮换不变；同一套方案在方案卡片、群公告、复制文本里顺序一致，重新生成才重新抽；比赛快照按当时的顺序与归属保存。</li>
               <li>硬约束默认开启，无可行方案时不自动放宽；奇数人数、缺评分时阻止数值推荐。支点/接应只算能踢外场的人。</li>
               <li>当天状态与伤病只调这一场有效评分：疲劳只扣体能（稍疲劳 -0.5，明显疲劳 -1，未知不扣）；轻伤速度体能各 -0.5；带伤上场速度体能各 -1、无球回防各 -0.5；叠加、每项最低 1 分、空仍为空、守门不受影响。扣分幅度是试行参数，没有比赛数据支持。</li>
               <li>「因伤不能守门」任何时候都能勾，不扣分，只不进守门轮换，改伤病不自动取消。「因伤只能守门」只有带伤上场才能勾，二选一，伤病改回自动取消；勾了的人整场固定守门，外场评分不计入本队平均（本队按 7 人算），一队最多一个。</li>

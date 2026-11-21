@@ -59,4 +59,24 @@ describe('App smoke (v1.6)', () => {
     expect(screen.getByText(/枚举总数 6435/)).toBeTruthy();
     unmount();
   });
+
+  it('switching recommended schemes keeps each scheme display order stable', async () => {
+    const user = userEvent.setup();
+    localStorage.clear();
+    const { unmount } = render(<App />);
+    await user.click(screen.getByRole('button', { name: '本场分组' }));
+    await user.click(screen.getByRole('button', { name: '生成分组' }));
+    await screen.findByText(/推荐方案/);
+    const notice = () => document.querySelector('pre.notice')?.textContent ?? '';
+    const first = notice(); // 默认选中覆盖第 1 名
+    expect(first).toContain('深黑队');
+    expect(first).toContain('浅蓝队');
+    await user.click(screen.getByRole('button', { name: /推荐 2/ }));
+    const second = notice();
+    expect(second).not.toBe(first); // 不同方案，名单不同
+    await user.click(screen.getByRole('button', { name: /推荐 1/ }));
+    // 切回推荐 1：公告文本与第一次完全一致（显示顺序生成时已定死，不重抽）
+    expect(notice()).toBe(first);
+    unmount();
+  });
 });
